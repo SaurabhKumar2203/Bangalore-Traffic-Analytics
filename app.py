@@ -1,75 +1,77 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
 
 # 1. PAGE SETUP
-st.set_page_config(page_title="Debug Mode", layout="wide")
-st.title("🛠️ Debugging Dashboard")
+st.set_page_config(page_title="Bangalore Traffic Advisor", layout="wide")
 
-# 2. DIAGNOSTICS: Check if file exists
-st.subheader("1. File System Check")
-current_files = os.listdir('.')
-st.write("Files in current directory:", current_files)
+st.title("🚦 Bangalore Urban Mobility & Traffic Analytics")
+st.markdown("### Smart City Dashboard | Q1 2025 Analysis")
 
-if 'bangalore_traffic_2025.csv' not in current_files:
-    st.error("❌ CRITICAL ERROR: 'bangalore_traffic_2025.csv' not found. Check filename case sensitivity!")
-    st.stop()
-else:
-    st.success("✅ CSV file found.")
-
-# 3. LOAD DATA WITHOUT CACHE (To ensure fresh load)
+# 2. LOAD DATA
+@st.cache_data
 def load_data():
-    try:
-        df = pd.read_csv('bangalore_traffic_2025.csv')
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-        df['Hour'] = df['Timestamp'].dt.hour
-        df['Day_Name'] = df['Timestamp'].dt.day_name()
-        # Ensure Is_Weekend is 0 or 1
-        df['Is_Weekend'] = df['Is_Weekend'].fillna(0).astype(int)
-        return df
-    except Exception as e:
-        return str(e)
+    df = pd.read_csv('bangalore_traffic_2025.csv')
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    df['Hour'] = df['Timestamp'].dt.hour
+    df['Day_Name'] = df['Timestamp'].dt.day_name()
+    # Ensure weekend flag is integer for cleaner filtering
+    df['Is_Weekend'] = df['Is_Weekend'].fillna(0).astype(int)
+    return df
 
-df = load_data()
+try:
+    df = load_data()
 
-# 4. DATA QUALITY CHECK
-st.subheader("2. Data Load Check")
-if isinstance(df, str):
-    st.error(f"❌ Error loading CSV: {df}")
-    st.stop()
-else:
-    st.write(f"✅ Data Loaded. Shape: {df.shape} (Rows, Columns)")
-    st.write("First 5 rows of raw data:", df.head())
+    # 3. SIDEBAR FILTERS
+    st.sidebar.header("Commuter Filters")
+    selected_location = st.sidebar.selectbox("Select Traffic Corridor:", df['Location'].unique())
+    selected_day_type = st.sidebar.radio("Day Type:", ["Weekday", "Weekend"])
 
-# 5. FILTER DEBUGGING
-st.subheader("3. Filter Logic Check")
-locations = df['Location'].unique()
-st.write("Available Locations:", locations)
+    # Filter Logic
+    is_weekend_filter = 1 if selected_day_type == "Weekend" else 0
+    filtered_df = df[(df['Location'] == selected_location) & (df['Is_Weekend'] == is_weekend_filter)]
 
-selected_location = st.selectbox("Select Traffic Corridor:", locations)
-selected_day_type = st.radio("Day Type:", ["Weekday", "Weekend"])
+    # 4. KPI METRICS (Top Row)
+    col1, col2, col3 = st.columns(3)
 
-is_weekend_filter = 1 if selected_day_type == "Weekend" else 0
+    avg_speed = filtered_df['Avg_Speed_kmh'].mean()
+    peak_traffic = filtered_df['Traffic_Volume'].max()
+    rain_days = filtered_df[filtered_df['Rainfall_mm'] > 0].shape[0]
 
-# Apply Filter
-filtered_df = df[(df['Location'] == selected_location) & (df['Is_Weekend'] == is_weekend_filter)]
+    col1.metric("Avg Speed (Selected Corridor)", f"{avg_speed:.1f} km/h")
+    col2.metric("Peak Volume Recorded", f"{peak_traffic:,} vehicles")
+    col3.metric("Rainy Days in Dataset", f"{rain_days} days")
 
-st.write(f"Filtering for: Location='{selected_location}' AND Is_Weekend={is_weekend_filter}")
-st.write(f"Rows found: {len(filtered_df)}")
+    # 5. CHARTS
 
-if filtered_df.empty:
-    st.warning("⚠️ No rows found! Checking why...")
-    # Drill down: Check just location
-    loc_check = df[df['Location'] == selected_location]
-    st.write(f"Rows with Location '{selected_location}': {len(loc_check)}")
-    # Drill down: Check just weekend
-    weekend_check = df[df['Is_Weekend'] == is_weekend_filter]
-    st.write(f"Rows with Is_Weekend '{is_weekend_filter}': {len(weekend_check)}")
-else:
-    st.success("✅ Filter works! Plotting chart...")
+    # Chart 1: Hourly Traffic Trend
+    st.subheader(f"Hourly Traffic Trends: {selected_location}")
+    hourly_trend = filtered_df.groupby('Hour')[['Avg_Speed_kmh', 'Congestion_Level']].mean().reset_index()
+
+    fig_line = px.line(hourly_trend, x='Hour', y='Avg_Speed_kmh', 
+                    title="Average Speed by Hour of Day",
+                    labels={'Avg_Speed_kmh': 'Speed (km/h)'},
+                    markers=True)
+    st.plotly_chart(fig_line, use_container_width=True)
+
+    # Chart 2: Rain Impact Analysis
+    st.subheader("💧 The Monsoon Effect: Rain vs. Speed")
     
-    # 6. PLOT
-    hourly_trend = filtered_df.groupby('Hour')[['Avg_Speed_kmh']].mean().reset_index()
-    fig = px.line(hourly_trend, x='Hour', y='Avg_Speed_kmh', title="Debug Chart")
-    st.plotly_chart(fig)
+    # We use the full dataset for this specific location to show the contrast
+    loc_df = df[df['Location'] == selected_location].copy()
+    
+    # Binning rainfall for clearer charts
+    loc_df['Rain_Category'] = pd.cut(loc_df['Rainfall_mm'], bins=[-1, 0, 10, 50], labels=['No Rain', 'Light Rain', 'Heavy Rain'])
+    rain_summary = loc_df.groupby('Rain_Category', observed=True)['Avg_Speed_kmh'].mean().reset_index()
+
+    fig_bar = px.bar(rain_summary, x='Rain_Category', y='Avg_Speed_kmh', 
+                    color='Rain_Category', 
+                    title="Impact of Rain Intensity on Traffic Speed")
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    # 6. INSIGHT GENERATOR
+    best_hour = hourly_trend.loc[hourly_trend['Avg_Speed_kmh'].idxmax()]['Hour']
+    st.info(f"💡 **Analyst Insight:** On {selected_day_type}s at {selected_location}, the best time to travel is **{best_hour}:00**.")
+
+except Exception as e:
+    st.error(f"An error occurred while loading the data: {e}")
